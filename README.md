@@ -4,6 +4,8 @@ MCP (Model Context Protocol) server for [qutebrowser](https://qutebrowser.org/) 
 
 Control qutebrowser from Claude Code or any MCP-compatible client.
 
+> **Note:** Linux only. Uses Unix domain sockets and XDG paths.
+
 ## Features
 
 - **Tab Management** - List, open, close, and focus tabs
@@ -76,8 +78,11 @@ The server communicates with qutebrowser via its IPC (Unix domain socket) for se
 
 ## Requirements
 
+- **Linux** (uses Unix domain sockets for IPC)
 - Node.js 18+
 - qutebrowser running with IPC enabled (default)
+
+Respects XDG environment variables (`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`) with standard fallbacks, so it should work across most Linux distributions.
 
 ## License
 
