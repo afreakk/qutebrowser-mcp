@@ -77,6 +77,10 @@ export class QutebrowserIPC {
     await this.sendCommand(":tab-focus", String(index));
   }
 
+  async tabMove(position: number | string): Promise<void> {
+    await this.sendCommand(":tab-move", String(position));
+  }
+
   async back(count?: number): Promise<void> {
     if (count) {
       await this.sendCommand(":back", String(count));

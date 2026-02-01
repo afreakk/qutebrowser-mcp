@@ -152,6 +152,41 @@ server.tool(
   }
 );
 
+server.tool(
+  "move_tab",
+  "Move the current tab to a new position",
+  {
+    position: z
+      .union([z.number().int(), z.string()])
+      .describe(
+        "Target position: absolute (1-based), relative (+1/-1), or +/- to move to end/start"
+      ),
+  },
+  async ({ position }) => {
+    try {
+      await ipc.tabMove(position);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Moved tab to position ${position}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // === NAVIGATION TOOLS ===
 
 server.tool(
