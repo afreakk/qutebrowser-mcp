@@ -91,10 +91,11 @@ server.tool(
   },
   async ({ index }) => {
     try {
-      if (index && index > 0) {
-        await ipc.tabFocus(index);
+      if (index !== undefined && index > 0) {
+        await ipc.tabCloseByIndex(index);
+      } else {
+        await ipc.tabClose();
       }
-      await ipc.tabClose();
       return {
         content: [
           {

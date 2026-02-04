@@ -63,14 +63,21 @@ export class QutebrowserIPC {
 
   async open(url: string, options?: { tab?: boolean; background?: boolean }): Promise<void> {
     const args = [":open"];
-    if (options?.tab) args.push("-t");
-    if (options?.background) args.push("-b");
+    if (options?.background) {
+      args.push("-b");
+    } else if (options?.tab) {
+      args.push("-t");
+    }
     args.push(url);
     await this.sendCommand(...args);
   }
 
   async tabClose(): Promise<void> {
     await this.sendCommand(":tab-close");
+  }
+
+  async tabCloseByIndex(index: number): Promise<void> {
+    await this.sendCommand(`:tab-focus ${index} ;; tab-close`);
   }
 
   async tabFocus(index: number | string): Promise<void> {
