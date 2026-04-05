@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { ipc } from "./ipc/client.js";
+import { cdp } from "./cdp/client.js";
 import { listTabs } from "./utils/session.js";
 import { getHistory, formatHistoryEntry } from "./utils/history.js";
 import { getBookmarks, getQuickmarks } from "./utils/bookmarks.js";
@@ -492,6 +493,259 @@ server.tool(
           {
             type: "text",
             text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// === CDP TOOLS ===
+
+server.tool(
+  "cdp_evaluate",
+  "Execute JavaScript in a browser tab via Chrome DevTools Protocol and return the result. Requires qutebrowser to be running with --qt-arg remote-debugging-port 9222. Unlike execute_js, this returns the actual result.",
+  {
+    expression: z
+      .string()
+      .describe(
+        "JavaScript expression to evaluate. Use an async IIFE for async operations: (async () => { ... })()"
+      ),
+    tab: z
+      .string()
+      .optional()
+      .describe(
+        "Tab to target by URL or title substring (e.g. 'outlook', 'github.com'). Uses the currently connected tab if omitted."
+      ),
+  },
+  async ({ expression, tab }) => {
+    try {
+      if (tab) {
+        await cdp.connectToTarget(tab);
+      }
+      const result = await cdp.evaluate(expression);
+      const text =
+        result === undefined
+          ? "(undefined)"
+          : typeof result === "string"
+            ? result
+            : JSON.stringify(result, null, 2);
+      return { content: [{ type: "text" as const, text }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "browser_fetch",
+  "Make an authenticated HTTP request through a browser tab's session. Runs fetch() inside the page context of a tab matching the given domain, inheriting all cookies and auth tokens. Returns the response body.",
+  {
+    tab: z
+      .string()
+      .describe(
+        "Tab to use by URL or title substring (e.g. 'outlook', 'github.com'). The tab must be open and logged in."
+      ),
+    url: z.string().describe("URL to fetch"),
+    method: z
+      .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+      .optional()
+      .describe("HTTP method (default: GET)"),
+    headers: z
+      .record(z.string())
+      .optional()
+      .describe("Additional request headers as key-value pairs"),
+    body: z
+      .string()
+      .optional()
+      .describe("Request body (for POST/PUT/PATCH). Will be sent as-is."),
+  },
+  async ({ tab, url, method, headers, body }) => {
+    try {
+      await cdp.connectToTarget(tab);
+
+      const fetchOpts: Record<string, unknown> = {
+        method: method ?? "GET",
+        credentials: "include",
+      };
+      if (headers) {
+        fetchOpts.headers = headers;
+      }
+      if (body) {
+        fetchOpts.body = body;
+      }
+
+      const expression = `
+        (async () => {
+          const r = await fetch(${JSON.stringify(url)}, ${JSON.stringify(fetchOpts)});
+          const ct = r.headers.get("content-type") || "";
+          const text = await r.text();
+          return JSON.stringify({
+            status: r.status,
+            statusText: r.statusText,
+            contentType: ct,
+            body: text.substring(0, 50000)
+          });
+        })()
+      `;
+
+      const raw = await cdp.evaluate(expression);
+      const result = JSON.parse(raw as string) as {
+        status: number;
+        statusText: string;
+        contentType: string;
+        body: string;
+      };
+
+      if (result.status >= 400) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `HTTP ${result.status} ${result.statusText}\n\n${result.body}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Try to pretty-print JSON responses
+      let responseBody = result.body;
+      if (result.contentType.includes("json")) {
+        try {
+          responseBody = JSON.stringify(JSON.parse(result.body), null, 2);
+        } catch {
+          // keep raw text
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: responseBody }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "browser_fetch_auth",
+  "Make an authenticated HTTP request using auth headers captured from a browser tab's network traffic. Reloads the tab to intercept fresh auth tokens, then makes the request server-side. Works for sites like Outlook that use Bearer tokens rather than cookies.",
+  {
+    tab: z
+      .string()
+      .describe(
+        "Tab to capture auth from, by URL or title substring (e.g. 'outlook')"
+      ),
+    url: z.string().describe("URL to fetch"),
+    method: z
+      .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+      .optional()
+      .describe("HTTP method (default: GET)"),
+    headers: z
+      .record(z.string())
+      .optional()
+      .describe("Additional request headers (merged with captured auth headers)"),
+    body: z
+      .string()
+      .optional()
+      .describe("Request body (for POST/PUT/PATCH)"),
+    url_filter: z
+      .string()
+      .optional()
+      .describe(
+        "Only capture auth from requests matching this substring (e.g. 'service.svc')"
+      ),
+  },
+  async ({ tab, url, method, headers, body, url_filter }) => {
+    try {
+      await cdp.connectToTarget(tab);
+      const authHeaders = await cdp.captureAuthHeaders(url_filter);
+
+      const merged = { ...authHeaders, ...headers };
+      const fetchOpts: RequestInit = {
+        method: method ?? "GET",
+        headers: merged,
+      };
+      if (body) {
+        fetchOpts.body = body;
+      }
+
+      const res = await fetch(url, fetchOpts);
+      const text = await res.text();
+
+      if (res.status >= 400) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `HTTP ${res.status} ${res.statusText}\n\n${text.substring(0, 50000)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Pretty-print JSON
+      const ct = res.headers.get("content-type") ?? "";
+      let responseBody = text.substring(0, 50000);
+      if (ct.includes("json")) {
+        try {
+          responseBody = JSON.stringify(JSON.parse(text), null, 2).substring(0, 50000);
+        } catch {
+          // keep raw
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: responseBody }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "cdp_list_targets",
+  "List all CDP-accessible browser tabs. Requires qutebrowser to be running with --qt-arg remote-debugging-port 9222.",
+  {},
+  async () => {
+    try {
+      const targets = await cdp.listTargets();
+      const pages = targets
+        .filter((t) => t.type === "page")
+        .map((t) => ({ title: t.title, url: t.url }));
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(pages, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}. Is qutebrowser running with --qt-arg remote-debugging-port 9222?`,
           },
         ],
         isError: true,

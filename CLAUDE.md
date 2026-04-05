@@ -17,7 +17,8 @@ This is an MCP (Model Context Protocol) server that provides browser automation 
 ### Communication Flow
 
 ```
-Claude Code <-> MCP Server (stdio) <-> qutebrowser IPC socket
+Claude Code <-> MCP Server (stdio) <-> qutebrowser IPC socket (fire-and-forget commands)
+                    |               \-> CDP WebSocket (JS eval, network intercept, auth capture)
                     |
                     +-> Session file (tab state)
                     +-> SQLite (history)
@@ -28,6 +29,7 @@ Claude Code <-> MCP Server (stdio) <-> qutebrowser IPC socket
 
 - **src/index.ts** - MCP server entry point, registers all tools using `@modelcontextprotocol/sdk`
 - **src/ipc/client.ts** - Unix socket client for qutebrowser IPC. Commands are fire-and-forget (no responses)
+- **src/cdp/client.ts** - Chrome DevTools Protocol client. Connects via WebSocket to port 9222 for JS evaluation, network interception, and auth header capture
 - **src/utils/session.ts** - Parses `~/.local/share/qutebrowser/sessions/_autosave.yml` for tab state
 - **src/utils/history.ts** - Reads `~/.local/share/qutebrowser/history.sqlite` using better-sqlite3
 - **src/utils/bookmarks.ts** - Reads plain text bookmark/quickmark files from config dir
@@ -77,7 +79,20 @@ mcp__qutebrowser__execute_js
 mcp__qutebrowser__get_bookmarks
 mcp__qutebrowser__get_quickmarks
 mcp__qutebrowser__search_history
+mcp__qutebrowser__cdp_evaluate
+mcp__qutebrowser__browser_fetch
+mcp__qutebrowser__browser_fetch_auth
+mcp__qutebrowser__cdp_list_targets
 ```
+
+### CDP Tools (require `--qt-arg remote-debugging-port 9222`)
+
+The CDP tools connect to qutebrowser's Chrome DevTools Protocol endpoint for capabilities the IPC socket can't provide:
+
+- **cdp_evaluate** - Execute JS in any tab and **return the result** (unlike `execute_js` which is fire-and-forget)
+- **browser_fetch** - Run `fetch()` inside a tab's page context, inheriting cookies/session. Good for cookie-based auth.
+- **browser_fetch_auth** - Capture auth headers from a tab's network traffic (via page reload), then make the request server-side. Works for sites like Outlook that use Bearer tokens rather than cookies. Auth headers are cached for 5 minutes.
+- **cdp_list_targets** - List all CDP-accessible tabs
 
 ### Tab Indexing
 
