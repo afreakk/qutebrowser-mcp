@@ -172,8 +172,16 @@ export class CDPClient {
 
   async connectToTarget(match: string): Promise<CDPTarget> {
     const target = await this.findTarget(match);
+    // Reuse existing connection if already connected to this target
+    if (
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      this.connectedTargetUrl === target.webSocketDebuggerUrl
+    ) {
+      return target;
+    }
     await this.connect(target.webSocketDebuggerUrl);
-    this.connectedTargetUrl = target.url;
+    this.connectedTargetUrl = target.webSocketDebuggerUrl;
     return target;
   }
 
