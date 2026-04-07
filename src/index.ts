@@ -594,7 +594,8 @@ server.tool(
             status: r.status,
             statusText: r.statusText,
             contentType: ct,
-            body: text.substring(0, 50000)
+            body: text.substring(0, 50000),
+            truncated: text.length > 50000
           });
         })()
       `;
@@ -605,6 +606,7 @@ server.tool(
         statusText: string;
         contentType: string;
         body: string;
+        truncated: boolean;
       };
 
       if (result.status >= 400) {
@@ -627,6 +629,10 @@ server.tool(
         } catch {
           // keep raw text
         }
+      }
+
+      if (result.truncated) {
+        responseBody += "\n[TRUNCATED at 50000 chars]";
       }
 
       return { content: [{ type: "text" as const, text: responseBody }] };
