@@ -17,10 +17,10 @@ This is an MCP (Model Context Protocol) server that provides browser automation 
 ### Communication Flow
 
 ```
-Claude Code <-> MCP Server (stdio) <-> qutebrowser IPC socket (fire-and-forget commands)
-                    |               \-> CDP WebSocket (JS eval, network intercept, auth capture)
+Claude Code <-> MCP Server (stdio) <-> CDP WebSocket (primary: navigate, close, reload, JS, screenshot, fetch)
+                    |               \-> qutebrowser IPC socket (secondary: open, focus, move tabs)
                     |
-                    +-> Session file (tab state)
+                    +-> Session file (tab indices, active state)
                     +-> SQLite (history)
                     +-> Config files (bookmarks)
 ```
@@ -28,8 +28,8 @@ Claude Code <-> MCP Server (stdio) <-> qutebrowser IPC socket (fire-and-forget c
 ### Key Components
 
 - **src/index.ts** - MCP server entry point, registers all tools using `@modelcontextprotocol/sdk`
-- **src/ipc/client.ts** - Unix socket client for qutebrowser IPC. Commands are fire-and-forget (no responses)
-- **src/cdp/client.ts** - Chrome DevTools Protocol client. Connects via WebSocket to port 9222 for JS evaluation, network interception, and auth header capture
+- **src/cdp/client.ts** - Chrome DevTools Protocol client (primary). Connects via WebSocket to port 9222 for navigation, JS evaluation, screenshots, tab close, reload, network interception, and auth capture. Operates on specific tabs without changing focus.
+- **src/ipc/client.ts** - Unix socket client for qutebrowser IPC (secondary). Fire-and-forget commands for qutebrowser-specific features (tab open, focus, move, session save).
 - **src/utils/session.ts** - Parses `~/.local/share/qutebrowser/sessions/_autosave.yml` for tab state
 - **src/utils/history.ts** - Reads `~/.local/share/qutebrowser/history.sqlite` using better-sqlite3
 - **src/utils/bookmarks.ts** - Reads plain text bookmark/quickmark files from config dir
@@ -79,32 +79,39 @@ mcp__qutebrowser__execute_js
 mcp__qutebrowser__get_bookmarks
 mcp__qutebrowser__get_quickmarks
 mcp__qutebrowser__search_history
-mcp__qutebrowser__cdp_evaluate
 mcp__qutebrowser__browser_fetch
 mcp__qutebrowser__browser_fetch_auth
-mcp__qutebrowser__cdp_list_targets
 ```
 
-### CDP Tools (require `--qt-arg remote-debugging-port 9222`)
+### CDP-First Design
 
-The CDP tools connect to qutebrowser's Chrome DevTools Protocol endpoint for capabilities the IPC socket can't provide:
+Most tools accept an optional `tab` parameter (URL or title substring). When provided, the tool operates on that specific tab via Chrome DevTools Protocol **without changing focus** — so your movie keeps playing.
 
-- **cdp_evaluate** - Execute JS in any tab and **return the result** (unlike `execute_js` which is fire-and-forget)
+When `tab` is omitted, tools fall back to IPC (operates on the currently focused tab).
+
+**CDP-enabled tools** (pass `tab` to use CDP):
+- **list_tabs** - Uses session file for indices/active state, enriched with CDP for fresh titles
+- **close_tab** - Close a tab by URL/title match
+- **navigate** - Navigate a specific tab to a URL
+- **go_back** / **go_forward** - History navigation on a specific tab
+- **reload_page** - Reload a specific tab
+- **screenshot** - Capture a specific tab
+- **execute_js** - Run JS in a specific tab and **return the result**
+
+**IPC-only tools** (qutebrowser-specific features):
+- **focus_tab** - Switch focus to a tab (intentionally changes focus)
+- **move_tab** - Reorder tabs
+- **open_tab** - Open a new background tab
+
+**CDP-only tools:**
 - **browser_fetch** - Run `fetch()` inside a tab's page context, inheriting cookies/session. Good for cookie-based auth.
 - **browser_fetch_auth** - Capture auth headers from a tab's network traffic (via page reload), then make the request server-side. Works for sites like Outlook that use Bearer tokens rather than cookies. Auth headers are cached for 5 minutes.
-- **cdp_list_targets** - List all CDP-accessible tabs
 
-### Tab Indexing
+### Tab Targeting
 
-**Critical**: `list_tabs` returns **0-based** indices, but `focus_tab` and `move_tab` use **1-based** indices.
+With CDP-first design, most tools target tabs by **URL or title substring** (e.g. `tab: "github.com"`, `tab: "outlook"`). No index math needed.
 
-```
-list_tabs output:  tabIndex: 0, 1, 2, 3...
-focus_tab input:   index: 1, 2, 3, 4...  (add 1 to list_tabs index)
-move_tab input:    position: 1, 2, 3...  (1-based absolute position)
-```
-
-Example: To focus on a tab shown as `tabIndex: 5` in list_tabs, use `focus_tab(index: 6)`.
+For IPC-only tools (`focus_tab`, `move_tab`), indices are **1-based**. If using the session file fallback for `list_tabs` (which returns 0-based indices), add 1 when passing to IPC tools.
 
 ### Tab Organization Workflow
 

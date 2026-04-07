@@ -299,6 +299,35 @@ export class CDPClient {
     this.authCache.clear();
   }
 
+  async navigate(url: string): Promise<void> {
+    await this.send("Page.navigate", { url });
+  }
+
+  async reload(ignoreCache?: boolean): Promise<void> {
+    await this.send("Page.reload", { ignoreCache: ignoreCache ?? false });
+  }
+
+  async closeTarget(match: string): Promise<void> {
+    const target = await this.findTarget(match);
+    if (!target) {
+      throw new Error(`No tab found matching "${match}"`);
+    }
+    const res = await fetch(`http://127.0.0.1:${this.port}/json/close/${target.id}`);
+    if (!res.ok) {
+      throw new Error(`Failed to close tab: ${res.statusText}`);
+    }
+  }
+
+  async captureScreenshot(format: "png" | "jpeg" = "png", quality?: number): Promise<Buffer> {
+    const params: Record<string, unknown> = { format };
+    if (format === "jpeg" && quality !== undefined) {
+      params.quality = quality;
+    }
+    const result = await this.send("Page.captureScreenshot", params);
+    const data = (result as { data: string }).data;
+    return Buffer.from(data, "base64");
+  }
+
   disconnect(): void {
     if (this.ws) {
       this.ws.close();

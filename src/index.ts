@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import { writeFile } from "node:fs/promises";
 import { ipc } from "./ipc/client.js";
 import { cdp } from "./cdp/client.js";
 import { listTabs } from "./utils/session.js";
@@ -18,18 +19,30 @@ const server = new McpServer({
 
 server.tool(
   "list_tabs",
-  "List all open tabs in qutebrowser with their URLs, titles, and active state",
+  "List all open tabs with indices, URLs, titles, and active state. Uses CDP for fresh title/URL data enriched with session file indices, falling back to session file only.",
   {},
   async () => {
     try {
-      const tabs = await listTabs();
+      const sessionTabs = await listTabs();
+
+      // Try to enrich with CDP data (fresher titles/URLs)
+      try {
+        const targets = await cdp.listTargets();
+        const pages = targets.filter((t) => t.type === "page");
+
+        // Match CDP targets to session tabs by URL
+        for (const tab of sessionTabs) {
+          const match = pages.find((p) => p.url === tab.url);
+          if (match) {
+            tab.title = match.title || tab.title;
+          }
+        }
+      } catch {
+        // CDP not available, session data is fine on its own
+      }
+
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(tabs, null, 2),
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(sessionTabs, null, 2) }],
       };
     } catch (err) {
       return {
@@ -47,23 +60,16 @@ server.tool(
 
 server.tool(
   "open_tab",
-  "Open a new tab with the specified URL",
+  "Open a new tab with the specified URL. Always opens in background (no focus change).",
   {
     url: z.string().describe("URL to open"),
-    background: z
-      .boolean()
-      .optional()
-      .describe("Open in background tab (default: false)"),
   },
-  async ({ url, background }) => {
+  async ({ url }) => {
     try {
-      await ipc.open(url, { tab: true, background });
+      await ipc.open(url, { tab: true, background: true });
       return {
         content: [
-          {
-            type: "text",
-            text: `Opened ${url} in ${background ? "background " : ""}tab`,
-          },
+          { type: "text", text: `Opened ${url} in background tab` },
         ],
       };
     } catch (err) {
@@ -82,29 +88,36 @@ server.tool(
 
 server.tool(
   "close_tab",
-  "Close the current tab or a specific tab by index",
+  "Close a tab by URL/title match via CDP (no focus change). Falls back to IPC index-based close.",
   {
+    tab: z
+      .string()
+      .optional()
+      .describe("Tab to close by URL or title substring (e.g. 'github.com'). Uses CDP."),
     index: z
       .number()
       .int()
       .optional()
-      .describe("Tab index (1-based). Omit to close current tab"),
+      .describe("Tab index (1-based). IPC fallback — will briefly change focus."),
   },
-  async ({ index }) => {
+  async ({ tab, index }) => {
     try {
-      if (index !== undefined && index > 0) {
+      if (tab) {
+        await cdp.closeTarget(tab);
+        return {
+          content: [{ type: "text", text: `Closed tab matching "${tab}"` }],
+        };
+      } else if (index !== undefined && index > 0) {
         await ipc.tabCloseByIndex(index);
+        return {
+          content: [{ type: "text", text: `Closed tab ${index}` }],
+        };
       } else {
         await ipc.tabClose();
+        return {
+          content: [{ type: "text", text: `Closed current tab` }],
+        };
       }
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Closed tab ${index ? index : "(current)"}`,
-          },
-        ],
-      };
     } catch (err) {
       return {
         content: [
@@ -121,7 +134,7 @@ server.tool(
 
 server.tool(
   "focus_tab",
-  "Switch to a specific tab by index",
+  "Switch to a specific tab by index (IPC only — this intentionally changes focus)",
   {
     index: z
       .union([z.number().int(), z.string()])
@@ -133,12 +146,7 @@ server.tool(
     try {
       await ipc.tabFocus(index);
       return {
-        content: [
-          {
-            type: "text",
-            text: `Focused tab ${index}`,
-          },
-        ],
+        content: [{ type: "text", text: `Focused tab ${index}` }],
       };
     } catch (err) {
       return {
@@ -156,7 +164,7 @@ server.tool(
 
 server.tool(
   "move_tab",
-  "Move the current tab to a new position",
+  "Move the current tab to a new position (IPC only)",
   {
     position: z
       .union([z.number().int(), z.string()])
@@ -168,12 +176,7 @@ server.tool(
     try {
       await ipc.tabMove(position);
       return {
-        content: [
-          {
-            type: "text",
-            text: `Moved tab to position ${position}`,
-          },
-        ],
+        content: [{ type: "text", text: `Moved tab to position ${position}` }],
       };
     } catch (err) {
       return {
@@ -193,20 +196,24 @@ server.tool(
 
 server.tool(
   "navigate",
-  "Navigate to a URL in the current tab",
+  "Navigate a tab to a URL. If 'tab' is specified, navigates that tab via CDP without changing focus. Otherwise navigates the current tab via IPC.",
   {
-    url: z.string().describe("URL or search term to navigate to"),
+    url: z.string().describe("URL to navigate to"),
+    tab: z
+      .string()
+      .optional()
+      .describe("Tab to target by URL or title substring. Uses CDP (no focus change)."),
   },
-  async ({ url }) => {
+  async ({ url, tab }) => {
     try {
-      await ipc.open(url);
+      if (tab) {
+        await cdp.connectToTarget(tab);
+        await cdp.navigate(url);
+      } else {
+        await ipc.open(url);
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: `Navigating to ${url}`,
-          },
-        ],
+        content: [{ type: "text", text: `Navigating ${tab ? `"${tab}"` : "current tab"} to ${url}` }],
       };
     } catch (err) {
       return {
@@ -224,8 +231,12 @@ server.tool(
 
 server.tool(
   "go_back",
-  "Navigate back in browser history",
+  "Navigate back in browser history. If 'tab' is specified, operates on that tab via CDP without changing focus.",
   {
+    tab: z
+      .string()
+      .optional()
+      .describe("Tab to target by URL or title substring. Uses CDP (no focus change)."),
     count: z
       .number()
       .int()
@@ -233,16 +244,19 @@ server.tool(
       .optional()
       .describe("Number of steps back (default: 1)"),
   },
-  async ({ count }) => {
+  async ({ tab, count }) => {
     try {
-      await ipc.back(count);
+      if (tab) {
+        await cdp.connectToTarget(tab);
+        const steps = count ?? 1;
+        for (let i = 0; i < steps; i++) {
+          await cdp.evaluate("history.back()");
+        }
+      } else {
+        await ipc.back(count);
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: `Navigated back ${count || 1} step(s)`,
-          },
-        ],
+        content: [{ type: "text", text: `Navigated back ${count || 1} step(s)` }],
       };
     } catch (err) {
       return {
@@ -260,8 +274,12 @@ server.tool(
 
 server.tool(
   "go_forward",
-  "Navigate forward in browser history",
+  "Navigate forward in browser history. If 'tab' is specified, operates on that tab via CDP without changing focus.",
   {
+    tab: z
+      .string()
+      .optional()
+      .describe("Tab to target by URL or title substring. Uses CDP (no focus change)."),
     count: z
       .number()
       .int()
@@ -269,16 +287,19 @@ server.tool(
       .optional()
       .describe("Number of steps forward (default: 1)"),
   },
-  async ({ count }) => {
+  async ({ tab, count }) => {
     try {
-      await ipc.forward(count);
+      if (tab) {
+        await cdp.connectToTarget(tab);
+        const steps = count ?? 1;
+        for (let i = 0; i < steps; i++) {
+          await cdp.evaluate("history.forward()");
+        }
+      } else {
+        await ipc.forward(count);
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: `Navigated forward ${count || 1} step(s)`,
-          },
-        ],
+        content: [{ type: "text", text: `Navigated forward ${count || 1} step(s)` }],
       };
     } catch (err) {
       return {
@@ -296,23 +317,27 @@ server.tool(
 
 server.tool(
   "reload_page",
-  "Reload the current page",
+  "Reload a page. If 'tab' is specified, reloads that tab via CDP without changing focus.",
   {
+    tab: z
+      .string()
+      .optional()
+      .describe("Tab to target by URL or title substring. Uses CDP (no focus change)."),
     force: z
       .boolean()
       .optional()
       .describe("Force reload bypassing cache (default: false)"),
   },
-  async ({ force }) => {
+  async ({ tab, force }) => {
     try {
-      await ipc.reload(force);
+      if (tab) {
+        await cdp.connectToTarget(tab);
+        await cdp.reload(force);
+      } else {
+        await ipc.reload(force);
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: `Page ${force ? "force " : ""}reloaded`,
-          },
-        ],
+        content: [{ type: "text", text: `Page ${force ? "force " : ""}reloaded` }],
       };
     } catch (err) {
       return {
@@ -332,17 +357,29 @@ server.tool(
 
 server.tool(
   "screenshot",
-  "Take a screenshot of the current page",
+  "Take a screenshot of a page. If 'tab' is specified, uses CDP to capture that specific tab without switching focus. Otherwise captures the currently focused tab via IPC.",
   {
     filename: z.string().describe("Output filename (PNG format)"),
     rect: z
       .string()
       .optional()
-      .describe("Capture rectangle in format WxH+X+Y (e.g., 800x600+0+0)"),
+      .describe("Capture rectangle in format WxH+X+Y (e.g., 800x600+0+0). Only works without 'tab' parameter."),
+    tab: z
+      .string()
+      .optional()
+      .describe(
+        "Tab to target by URL or title substring (e.g. 'github.com', 'outlook'). Uses CDP — requires --qt-arg remote-debugging-port 9222. Captures without changing focus."
+      ),
   },
-  async ({ filename, rect }) => {
+  async ({ filename, rect, tab }) => {
     try {
-      await ipc.screenshot(filename, rect);
+      if (tab) {
+        await cdp.connectToTarget(tab);
+        const buf = await cdp.captureScreenshot("png");
+        await writeFile(filename, buf);
+      } else {
+        await ipc.screenshot(filename, rect);
+      }
       return {
         content: [
           {
@@ -367,25 +404,38 @@ server.tool(
 
 server.tool(
   "execute_js",
-  "Execute JavaScript code in the current page context. Note: Output is shown in qutebrowser's UI, not returned here.",
+  "Execute JavaScript in a page. If 'tab' is specified, uses CDP to run in that tab and return the result (no focus change). Without 'tab', uses IPC on the current tab (fire-and-forget, no return value).",
   {
     code: z.string().describe("JavaScript code to execute"),
+    tab: z
+      .string()
+      .optional()
+      .describe("Tab to target by URL or title substring. Uses CDP — returns the result."),
     quiet: z
       .boolean()
       .optional()
-      .describe("Suppress output messages in qutebrowser (default: false)"),
+      .describe("Suppress output in qutebrowser UI (IPC mode only)"),
   },
-  async ({ code, quiet }) => {
+  async ({ code, tab, quiet }) => {
     try {
-      await ipc.jseval(code, quiet);
-      return {
-        content: [
-          {
-            type: "text",
-            text: "JavaScript executed (check qutebrowser for output)",
-          },
-        ],
-      };
+      if (tab) {
+        await cdp.connectToTarget(tab);
+        const result = await cdp.evaluate(code);
+        const text =
+          result === undefined
+            ? "(undefined)"
+            : typeof result === "string"
+              ? result
+              : JSON.stringify(result, null, 2);
+        return { content: [{ type: "text", text }] };
+      } else {
+        await ipc.jseval(code, quiet);
+        return {
+          content: [
+            { type: "text", text: "JavaScript executed (check qutebrowser for output)" },
+          ],
+        };
+      }
     } catch (err) {
       return {
         content: [
@@ -502,49 +552,6 @@ server.tool(
 );
 
 // === CDP TOOLS ===
-
-server.tool(
-  "cdp_evaluate",
-  "Execute JavaScript in a browser tab via Chrome DevTools Protocol and return the result. Requires qutebrowser to be running with --qt-arg remote-debugging-port 9222. Unlike execute_js, this returns the actual result.",
-  {
-    expression: z
-      .string()
-      .describe(
-        "JavaScript expression to evaluate. Use an async IIFE for async operations: (async () => { ... })()"
-      ),
-    tab: z
-      .string()
-      .optional()
-      .describe(
-        "Tab to target by URL or title substring (e.g. 'outlook', 'github.com'). Uses the currently connected tab if omitted."
-      ),
-  },
-  async ({ expression, tab }) => {
-    try {
-      if (tab) {
-        await cdp.connectToTarget(tab);
-      }
-      const result = await cdp.evaluate(expression);
-      const text =
-        result === undefined
-          ? "(undefined)"
-          : typeof result === "string"
-            ? result
-            : JSON.stringify(result, null, 2);
-      return { content: [{ type: "text" as const, text }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  }
-);
 
 server.tool(
   "browser_fetch",
@@ -719,33 +726,6 @@ server.tool(
           {
             type: "text" as const,
             text: `Error: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  }
-);
-
-server.tool(
-  "cdp_list_targets",
-  "List all CDP-accessible browser tabs. Requires qutebrowser to be running with --qt-arg remote-debugging-port 9222.",
-  {},
-  async () => {
-    try {
-      const targets = await cdp.listTargets();
-      const pages = targets
-        .filter((t) => t.type === "page")
-        .map((t) => ({ title: t.title, url: t.url }));
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(pages, null, 2) }],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: ${err instanceof Error ? err.message : String(err)}. Is qutebrowser running with --qt-arg remote-debugging-port 9222?`,
           },
         ],
         isError: true,

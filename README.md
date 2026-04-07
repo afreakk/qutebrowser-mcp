@@ -8,12 +8,23 @@ Control qutebrowser from Claude Code or any MCP-compatible client.
 
 ## Features
 
-- **Tab Management** - List, open, close, and focus tabs
-- **Navigation** - Go to URLs, back/forward, reload
-- **Screenshots** - Capture the current page
-- **JavaScript Execution** - Run JS in page context (fire-and-forget via IPC, or with return values via CDP)
+- **CDP-First Design** - Most tools operate on specific tabs via Chrome DevTools Protocol without changing focus
+- **Tab Management** - List, open, close, focus, and move tabs
+- **Navigation** - Go to URLs, back/forward, reload — all targetable to specific tabs
+- **Screenshots** - Capture any tab without switching to it
+- **JavaScript Execution** - Run JS in any tab and get return values
 - **Authenticated Fetch** - Make HTTP requests through the browser's logged-in sessions (cookies or Bearer tokens)
 - **Bookmarks & History** - Access bookmarks, quickmarks, and browsing history
+
+## CDP Setup (Recommended)
+
+Most tools use Chrome DevTools Protocol to operate on tabs without changing focus. Enable remote debugging via environment variable:
+
+```bash
+QTWEBENGINE_REMOTE_DEBUGGING=9222 qutebrowser
+```
+
+Without CDP, tools fall back to IPC which operates on the currently focused tab and may cause tab switches.
 
 ## Installation
 
@@ -47,37 +58,42 @@ npm start
 
 ## Available Tools
 
-### IPC Tools
+### CDP-Enabled Tools
 
-These use qutebrowser's Unix domain socket. No extra setup needed.
+These accept an optional `tab` parameter (URL or title substring) to target a specific tab via CDP **without changing focus**. Without `tab`, they fall back to IPC on the focused tab.
 
 | Tool | Description |
 |------|-------------|
-| `list_tabs` | List all open tabs with URLs and titles |
-| `open_tab` | Open a new tab with URL |
-| `close_tab` | Close current or specific tab |
-| `focus_tab` | Switch to a tab by index |
-| `move_tab` | Move the current tab to a new position |
-| `navigate` | Go to URL in current tab |
+| `list_tabs` | List all tabs with indices, URLs, titles, active state (session file + CDP enrichment) |
+| `close_tab` | Close a tab by URL/title match (CDP) or by index (IPC) |
+| `navigate` | Navigate a tab to a URL |
 | `go_back` | Navigate back in history |
-| `go_forward` | Navigate forward |
-| `reload_page` | Reload current page |
-| `screenshot` | Take screenshot of page |
-| `execute_js` | Run JavaScript on page (output in qutebrowser UI, not returned) |
+| `go_forward` | Navigate forward in history |
+| `reload_page` | Reload a page |
+| `screenshot` | Capture a page as PNG |
+| `execute_js` | Run JavaScript and return the result (CDP) or fire-and-forget (IPC) |
+
+### IPC-Only Tools
+
+These use qutebrowser's Unix domain socket for features CDP can't provide.
+
+| Tool | Description |
+|------|-------------|
+| `open_tab` | Open a new background tab |
+| `focus_tab` | Switch focus to a tab by index (intentionally changes focus) |
+| `move_tab` | Move the current tab to a new position |
 | `get_bookmarks` | List bookmarks |
 | `get_quickmarks` | List quickmarks |
 | `search_history` | Search browsing history |
 
-### CDP Tools
+### CDP-Only Tools
 
-These use Chrome DevTools Protocol for capabilities IPC can't provide. Requires qutebrowser started with remote debugging enabled (see [CDP Setup](#cdp-setup)).
+These always require CDP and a `tab` parameter.
 
 | Tool | Description |
 |------|-------------|
-| `cdp_evaluate` | Run JS in any tab and **return the result** |
 | `browser_fetch` | `fetch()` inside a page context, inheriting cookies/session |
 | `browser_fetch_auth` | Capture auth headers from network traffic, make server-side requests |
-| `cdp_list_targets` | List all CDP-accessible tabs |
 
 #### `browser_fetch` vs `browser_fetch_auth`
 
@@ -88,37 +104,22 @@ These use Chrome DevTools Protocol for capabilities IPC can't provide. Requires 
 
 The server communicates with qutebrowser through two channels:
 
-1. **IPC** (Unix domain socket) - Fire-and-forget commands (open, close, navigate, etc.)
-2. **CDP** (Chrome DevTools Protocol WebSocket) - Bidirectional communication for JS evaluation with return values, network interception, and auth header capture
+1. **CDP** (Chrome DevTools Protocol WebSocket) - Primary channel. Bidirectional communication for JS evaluation, navigation, screenshots, tab close, reload, and network interception. Operates on specific tabs without changing focus.
+2. **IPC** (Unix domain socket) - Secondary channel. Fire-and-forget commands for qutebrowser-specific features (tab open, focus, move, bookmarks, session save).
 
 State is read from:
 
-- **Session file** (`~/.local/share/qutebrowser/sessions/_autosave.yml`) - Tab state
+- **Session file** (`~/.local/share/qutebrowser/sessions/_autosave.yml`) - Tab indices, active state, pinned state
+- **CDP targets** - Fresh tab titles and URLs
 - **SQLite database** (`~/.local/share/qutebrowser/history.sqlite`) - Browsing history
 - **Config files** (`~/.config/qutebrowser/`) - Bookmarks and quickmarks
-
-## CDP Setup
-
-To use the CDP tools (`cdp_evaluate`, `browser_fetch`, `browser_fetch_auth`, `cdp_list_targets`), start qutebrowser with remote debugging enabled:
-
-```bash
-qutebrowser --qt-arg remote-debugging-port 9222
-```
-
-Or set the environment variable:
-
-```bash
-QTWEBENGINE_REMOTE_DEBUGGING=9222 qutebrowser
-```
-
-The IPC-based tools work without this flag.
 
 ## Requirements
 
 - **Linux** (uses Unix domain sockets for IPC)
 - Node.js 18+
 - qutebrowser running with IPC enabled (default)
-- For CDP tools: qutebrowser started with `--qt-arg remote-debugging-port 9222`
+- **Recommended:** qutebrowser started with `QTWEBENGINE_REMOTE_DEBUGGING=9222` for CDP support
 
 Respects XDG environment variables (`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`) with standard fallbacks, so it should work across most Linux distributions.
 
