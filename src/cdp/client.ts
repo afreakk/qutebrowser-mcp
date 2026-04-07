@@ -60,24 +60,48 @@ export class CDPClient {
     return (await res.json()) as CDPTarget[];
   }
 
-  async findTarget(match: string): Promise<CDPTarget | undefined> {
+  async findTarget(match: string): Promise<CDPTarget> {
     const targets = await this.listTargets();
+    const pages = targets.filter((t) => t.type === "page");
     const lower = match.toLowerCase();
-    return targets.find(
+
+    // Try exact URL match first
+    const exact = pages.filter((t) => t.url.toLowerCase() === lower);
+    if (exact.length === 1) return exact[0];
+
+    // Fall back to substring match on URL and title
+    const matches = pages.filter(
       (t) =>
-        t.type === "page" &&
-        (t.url.toLowerCase().includes(lower) ||
-          t.title.toLowerCase().includes(lower))
+        t.url.toLowerCase().includes(lower) ||
+        t.title.toLowerCase().includes(lower)
     );
+
+    if (matches.length === 0) {
+      throw new Error(
+        `No tab found matching "${match}". Is the page open in qutebrowser?`
+      );
+    }
+    if (matches.length > 1) {
+      const list = matches
+        .map((t) => `  - ${t.title} (${t.url})`)
+        .join("\n");
+      throw new Error(
+        `Multiple tabs match "${match}":\n${list}\nBe more specific.`
+      );
+    }
+    return matches[0];
   }
 
   async connect(wsUrl: string): Promise<void> {
     if (this.ws) {
-      this.ws.close();
+      const old = this.ws;
       this.ws = null;
+      this.connectedTargetUrl = null;
+      old.removeAllListeners();
+      old.close();
     }
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, { maxPayload: 100 * 1024 * 1024 });
 
       const connectTimer = setTimeout(() => {
         ws.close();
@@ -148,11 +172,6 @@ export class CDPClient {
 
   async connectToTarget(match: string): Promise<CDPTarget> {
     const target = await this.findTarget(match);
-    if (!target) {
-      throw new Error(
-        `No tab found matching "${match}". Is the page open in qutebrowser?`
-      );
-    }
     await this.connect(target.webSocketDebuggerUrl);
     this.connectedTargetUrl = target.url;
     return target;
@@ -309,9 +328,6 @@ export class CDPClient {
 
   async closeTarget(match: string): Promise<void> {
     const target = await this.findTarget(match);
-    if (!target) {
-      throw new Error(`No tab found matching "${match}"`);
-    }
     const res = await fetch(`http://127.0.0.1:${this.port}/json/close/${target.id}`);
     if (!res.ok) {
       throw new Error(`Failed to close tab: ${res.statusText}`);
@@ -319,6 +335,9 @@ export class CDPClient {
   }
 
   async captureScreenshot(format: "png" | "jpeg" = "png", quality?: number): Promise<Buffer> {
+    // Some QtWebEngine versions need Page domain enabled first
+    await this.send("Page.enable");
+
     const params: Record<string, unknown> = { format };
     if (format === "jpeg" && quality !== undefined) {
       params.quality = quality;
