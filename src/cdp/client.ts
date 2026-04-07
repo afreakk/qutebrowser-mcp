@@ -85,8 +85,13 @@ export class CDPClient {
       const list = matches
         .map((t) => `  - ${t.title} (${t.url})`)
         .join("\n");
+      const allSameUrl =
+        new Set(matches.map((t) => t.url)).size === 1;
+      const hint = allSameUrl
+        ? "Multiple tabs open at the same URL — close duplicates or use an index-based tool (focus_tab, close_tab with index)."
+        : "Be more specific.";
       throw new Error(
-        `Multiple tabs match "${match}":\n${list}\nBe more specific.`
+        `Multiple tabs match "${match}":\n${list}\n${hint}`
       );
     }
     return matches[0];
