@@ -66,7 +66,7 @@ server.tool(
   },
   async ({ url }) => {
     try {
-      await ipc.open(url, { tab: true, background: true });
+      await ipc.open(url, { background: true });
       return {
         content: [
           { type: "text", text: `Opened ${url} in background tab` },

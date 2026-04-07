@@ -61,12 +61,10 @@ export class QutebrowserIPC {
     });
   }
 
-  async open(url: string, options?: { tab?: boolean; background?: boolean }): Promise<void> {
+  async open(url: string, options?: { background?: boolean }): Promise<void> {
     const args = [":open"];
     if (options?.background) {
       args.push("-b");
-    } else if (options?.tab) {
-      args.push("-t");
     }
     args.push(url);
     await this.sendCommand(...args);
