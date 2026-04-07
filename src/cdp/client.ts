@@ -340,6 +340,10 @@ export class CDPClient {
     if (!res.ok) {
       throw new Error(`Failed to close tab: ${res.statusText}`);
     }
+    // Clean up WebSocket if we were connected to the closed tab
+    if (this.connectedTargetUrl === target.webSocketDebuggerUrl) {
+      this.disconnect();
+    }
   }
 
   async captureScreenshot(format: "png" | "jpeg" = "png", quality?: number): Promise<Buffer> {
