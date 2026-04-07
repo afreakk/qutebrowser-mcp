@@ -361,11 +361,17 @@ export class CDPClient {
 
   disconnect(): void {
     if (this.ws) {
+      this.ws.removeAllListeners();
       this.ws.close();
       this.ws = null;
     }
     this.connectedTargetUrl = null;
     this.eventListeners.clear();
+    // Drain pending promises so callers get a clean rejection
+    for (const p of this.pending.values()) {
+      p.reject(new Error("Disconnected"));
+    }
+    this.pending.clear();
   }
 }
 
