@@ -248,10 +248,7 @@ server.tool(
     try {
       if (tab) {
         await cdp.connectToTarget(tab);
-        const steps = count ?? 1;
-        for (let i = 0; i < steps; i++) {
-          await cdp.evaluate("history.back()");
-        }
+        await cdp.navigateHistory(-(count ?? 1));
       } else {
         await ipc.back(count);
       }
@@ -291,10 +288,7 @@ server.tool(
     try {
       if (tab) {
         await cdp.connectToTarget(tab);
-        const steps = count ?? 1;
-        for (let i = 0; i < steps; i++) {
-          await cdp.evaluate("history.forward()");
-        }
+        await cdp.navigateHistory(count ?? 1);
       } else {
         await ipc.forward(count);
       }

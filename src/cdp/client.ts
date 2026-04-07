@@ -331,6 +331,29 @@ export class CDPClient {
     this.authCache.clear();
   }
 
+  /**
+   * Navigate forward or backward in session history using CDP's
+   * Page.getNavigationHistory / Page.navigateToHistoryEntry.
+   * Unlike history.back() loops, this works for count > 1 because
+   * it doesn't destroy the page context between steps.
+   * @param delta Negative for back, positive for forward.
+   */
+  async navigateHistory(delta: number): Promise<void> {
+    const result = await this.send("Page.getNavigationHistory");
+    const { currentIndex, entries } = result as {
+      currentIndex: number;
+      entries: { id: number; url: string; title: string }[];
+    };
+    const targetIndex = Math.max(
+      0,
+      Math.min(entries.length - 1, currentIndex + delta)
+    );
+    if (targetIndex === currentIndex) return;
+    await this.send("Page.navigateToHistoryEntry", {
+      entryId: entries[targetIndex].id,
+    });
+  }
+
   async navigate(url: string): Promise<void> {
     await this.send("Page.navigate", { url });
   }
